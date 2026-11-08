@@ -1,0 +1,65 @@
+# Prépare le relief fin de toute la Terre : une tâche par bande de paquets (bz de -20 à 19, ~4,6° de latitude chacune),
+# publiée comme release « v1-z<bz> » (un fichier relief_<bx>_<bz>.bin par paquet de 4 x 4 régions de 512 blocs).
+# Le mod télécharge : https://github.com/theMitch37/domaine-terre-relief/releases/download/v1-z{bz}/relief_{bx}_{bz}.bin
+name: Relief du monde
+
+on:
+  push:
+    branches: [main]
+    paths: [bandes.json]
+  workflow_dispatch:
+    inputs:
+      bandes:
+        description: "bandes bz (JSON), vide = toutes"
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  liste:
+    runs-on: ubuntu-latest
+    outputs:
+      bandes: ${{ steps.l.outputs.bandes }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: l
+        run: |
+          B='${{ inputs.bandes }}'
+          [ -n "$B" ] || B=$(tr -d '\n ' < bandes.json)
+          echo "bandes=$B" >> "$GITHUB_OUTPUT"
+
+  bande:
+    needs: liste
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        bz: ${{ fromJSON(needs.liste.outputs.bandes) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install rasterio numpy
+      - name: Bande ${{ matrix.bz }}
+        run: python relief_bande.py ${{ matrix.bz }} /tmp/sortie
+      - name: Publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(ls /tmp/sortie | wc -l)
+          echo "$n paquets"; du -sh /tmp/sortie
+          [ "$n" -gt 0 ] || exit 0
+          tag="v1-z${{ matrix.bz }}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Relief fin v1, bande z${{ matrix.bz }}" \
+            --notes "Copernicus DEM GLO-90 (© DLR e.V. 2010-2014 et © Airbus Defence and Space GmbH 2014-2018, fourni dans le cadre du programme Copernicus), ramené à 1 point par bloc pour Domaine d'Aubin – Terre."
+          gh release upload "$tag" /tmp/sortie/*.bin --clobber
+
+  menage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: git push origin --delete essai || true

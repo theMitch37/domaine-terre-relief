@@ -4,10 +4,12 @@
 name: Fond des mers
 
 on:
-  push:
-    branches: [main]
-    paths: [fond.py, .github/workflows/fond.yml]
   workflow_dispatch:
+    inputs:
+      bandes:
+        description: "Bandes bz (JSON), vide = toutes"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -20,7 +22,7 @@ jobs:
       fail-fast: false
       max-parallel: 4
       matrix:
-        bz: [-11, -10, -9, -12, -13, -8, -7, -14, -6, -15, -5, -16, -4, -17, -3, -18, -2, -19, -1, -20, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+        bz: ${{ fromJSON(inputs.bandes || '[-11, -10, -9, -12, -13, -8, -7, -14, -6, -15, -5, -16, -4, -17, -3, -18, -2, -19, -1, -20, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

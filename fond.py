@@ -91,6 +91,20 @@ def une_region(args):
     return tx, tz, R.encoder(out)
 
 
+def une_region_diag(args):
+    import rasterio
+    from rasterio.merge import merge
+    tx, tz, chemins = args
+    o, e = tx * T / BPD, (tx + 1) * T / BPD
+    n, s = -tz * T / BPD, -(tz + 1) * T / BPD
+    choisies = [k for k in chemins if k[0] - 15 < n and k[0] > s and k[1] < e and k[1] + 15 > o]
+    srcs = [rasterio.open(chemins[k]) for k in choisies]
+    if not srcs:
+        return ("aucune tuile", (o, e, s, n))
+    mos, tr = merge(srcs, bounds=(o, s, e, n), nodata=np.nan, dtype="float32")
+    return (choisies, mos.shape, float(np.nanmin(mos)), float(np.nanmax(mos)), int(np.isfinite(mos).sum()))
+
+
 def publier(tag, f):
     for essai in range(8):
         r = subprocess.run(["gh", "release", "upload", tag, f, "--clobber"], capture_output=True, text=True)
@@ -146,6 +160,16 @@ def main():
                         chemins[(lh, lg)] = p
             if not chemins:
                 continue
+            if nb == 0 and not getattr(main, "vu", False):
+                main.vu = True
+                print("tuiles du premier paquet :", {k: os.path.getsize(v) for k, v in chemins.items()}, flush=True)
+                try:
+                    import rasterio
+                    with rasterio.open(next(iter(chemins.values()))) as r:
+                        print("  ", r.bounds, r.res, r.nodata, r.dtypes, flush=True)
+                    print("  région test :", une_region_diag((bx * 4, bz * 4, chemins)), flush=True)
+                except Exception as ex2:
+                    import traceback; traceback.print_exc()
             taches = [(bx * 4 + (k % 4), bz * 4 + (k // 4), chemins) for k in range(16)]
             rs = {}
             for tx, tz, b in ex.map(une_region, taches):

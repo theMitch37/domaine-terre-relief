@@ -158,6 +158,8 @@ def main():
                     p = tuile(lh, lg, connues)
                     if p:
                         chemins[(lh, lg)] = p
+                    elif bx % 10 == 0:
+                        print("  tuile absente", lh, lg, nom_tuile(lh - 15 if BAS else lh, lg), flush=True)
             if not chemins:
                 continue
             if nb == 0 and not getattr(main, "vu", False):
@@ -178,6 +180,7 @@ def main():
             for (lh, lg), p in list(chemins.items()):        # tuiles finies (à l'ouest) : place sur le disque
                 if lg + 15 <= e and os.path.exists(p):
                     os.remove(p)
+            print(f"  bx {bx} ({o:.1f}° à {e:.1f}°) : {len(chemins)} tuiles, {len(rs)} régions de mer", flush=True)
             if not rs:
                 continue
             data = R.paquet(bx, bz, rs)

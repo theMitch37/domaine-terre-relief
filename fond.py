@@ -40,8 +40,11 @@ def liste():
     return None
 
 
+BAS = False                      # noms par le coin sud-ouest (S90…) plutôt que nord-ouest (N90…), vu dans la liste
+
+
 def tuile(lat_haut, lon_gauche, connues):
-    n = nom_tuile(lat_haut, lon_gauche)
+    n = nom_tuile(lat_haut - 15 if BAS else lat_haut, lon_gauche)
     p = os.path.join(DOSSIER, n)
     if os.path.exists(p):
         return p
@@ -104,6 +107,10 @@ def main():
     os.makedirs(DOSSIER, exist_ok=True)
     os.makedirs(sortie, exist_ok=True)
     connues = liste()
+    global BAS
+    if connues:
+        BAS = any("_S90" in c for c in connues) and not any("_N90" in c for c in connues)
+        print("noms par le coin", "sud-ouest" if BAS else "nord-ouest", sorted(connues)[:3], flush=True)
     tag = f"f-z{bz}"
     deja = set()
     if pub:

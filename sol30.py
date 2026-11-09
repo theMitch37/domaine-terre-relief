@@ -234,7 +234,116 @@ def ouvrir(urls_noms, dossier):
     return srcs
 
 
-def eau(tx, tz, wc_dir, dem_dir):
+# ---------------------------------------------------------------- ruisseaux (09/11/2026)
+
+G = 4                       # blocs par case du calcul d'écoulement (tracés plus souples qu'à 8)
+MR = 2048                   # marge (blocs) autour du paquet : bassins versants qui débordent
+A_RUISSEAU = 2.0e6          # m² de bassin versant pour qu'un ruisseau commence
+A_LARGE = 2.0e7             # m² au-delà desquels il fait 2 à 3 blocs de large
+
+
+def ecoulement(z):
+    """Remplissage des cuvettes et sens d'écoulement (Barnes 2014, priority-flood + epsilon) : l'eau part de chaque
+    case vers celle qui l'a découverte. Bords et vide (mer) = exutoires. Rend (relief rempli, receveur, ordre)."""
+    import heapq
+    H, W = z.shape
+    zz = np.where(np.isfinite(z), z, -1e9).astype(np.float64).ravel()
+    vu = np.zeros(H * W, bool)
+    recv = np.full(H * W, -1, np.int64)
+    tas = []
+    for i in range(H * W):
+        y, x = divmod(i, W)
+        if y == 0 or x == 0 or y == H - 1 or x == W - 1 or zz[i] < -1e8:
+            heapq.heappush(tas, (zz[i], i))
+            vu[i] = True
+    ordre = []
+    voisins = (-W - 1, -W, -W + 1, -1, 1, W - 1, W, W + 1)
+    while tas:
+        h, i = heapq.heappop(tas)
+        ordre.append(i)
+        y, x = divmod(i, W)
+        for dv in voisins:
+            j = i + dv
+            if j < 0 or j >= H * W:
+                continue
+            yj, xj = divmod(j, W)
+            if abs(yj - y) > 1 or abs(xj - x) > 1 or vu[j]:
+                continue
+            vu[j] = True
+            if zz[j] <= h:
+                zz[j] = h + 1e-4
+            recv[j] = i
+            heapq.heappush(tas, (zz[j], j))
+    return zz.reshape(H, W), recv, np.array(ordre, np.int64)
+
+
+def ruisseaux_paquet(bx, bz, dem_dir):
+    """Petits cours d'eau d'un paquet (et de sa marge M) au fond des vraies vallées : écoulement sur le relief 30 m
+    moyenné par cases de G blocs, ruisseau dès A_RUISSEAU de bassin versant, tracé bloc par bloc d'une case à sa
+    receveuse. Rend (masque, niveau en m) sur la grille du paquet agrandi de M blocs."""
+    x0, z0 = bx * T * N - MR, bz * T * N - MR
+    W = (T * N + 2 * MR) // G
+    o, n = x0 / BPD, -z0 / BPD
+    e, s = o + W * G / BPD, n - W * G / BPD
+    noms = []
+    for la in range(math.floor(s), math.floor(n) + 1):
+        for lo in range(math.floor(o), math.floor(e) + 1):
+            nn = (f"Copernicus_DSM_COG_10_{'N' if la >= 0 else 'S'}{abs(la):02d}_00_"
+                  f"{'E' if lo >= 0 else 'W'}{abs(lo):03d}_00_DEM")
+            noms.append((DEM.format(n=nn), nn + ".tif"))
+    srcs = ouvrir(noms, dem_dir)
+    L = T * N + 2 * M
+    masque = np.zeros((L, L), bool)
+    niveau = np.full((L, L), np.nan, np.float32)
+    if not srcs:
+        return masque, niveau
+    from rasterio.merge import merge
+    from rasterio.warp import reproject
+    from rasterio.enums import Resampling
+    from rasterio.transform import from_origin
+    mos, tr = merge(srcs, bounds=(o, s, e, n), nodata=np.nan, dtype="float32")
+    z = np.full((W, W), np.nan, np.float32)
+    reproject(mos[0], z, src_transform=tr, src_crs="EPSG:4326", src_nodata=np.nan,
+              dst_transform=from_origin(o, n, G / BPD, G / BPD), dst_crs="EPSG:4326", dst_nodata=np.nan,
+              resampling=Resampling.average)
+    del mos
+    z = np.where(np.isfinite(z) & (z > 0.5), z, np.nan)
+    t0 = time.time()
+    zr, recv, ordre = ecoulement(z)
+    aire = np.ones(W * W, np.float64)
+    for i in ordre[::-1]:
+        r = recv[i]
+        if r >= 0:
+            aire[r] += aire[i]
+    aire *= (G * 30.0) ** 2
+    print(f"  écoulement {W}x{W} : {time.time() - t0:.0f} s", flush=True)
+    # segments case -> receveuse, pour les cases de ruisseau sur terre ferme
+    src = np.nonzero((aire >= A_RUISSEAU) & np.isfinite(z.ravel()) & (recv >= 0))[0]
+    if src.size == 0:
+        return masque, niveau
+    dst = recv[src]
+    ya, xa = np.divmod(src, W)
+    yb, xb = np.divmod(dst, W)
+    za, zb = zr.ravel()[src], zr.ravel()[dst]
+    zb = np.where(zb < -1e8, za, zb)
+    large = aire[src] >= A_LARGE
+    decal = MR - M                                   # case -> bloc du paquet agrandi de M
+    for k in range(G + 1):
+        t = k / G
+        bxk = ((xa + (xb - xa) * t) * G + G / 2 - decal).astype(np.int64)
+        bzk = ((ya + (yb - ya) * t) * G + G / 2 - decal).astype(np.int64)
+        zk = (za + (zb - za) * t).astype(np.float32)
+        for dx, dz, sel in ((0, 0, None), (1, 0, large), (0, 1, large)):
+            xx, yy, vv = bxk + dx, bzk + dz, zk
+            if sel is not None:
+                xx, yy, vv = xx[sel], yy[sel], vv[sel]
+            ok = (xx >= 0) & (xx < L) & (yy >= 0) & (yy < L)
+            masque[yy[ok], xx[ok]] = True
+            niveau[yy[ok], xx[ok]] = np.fmin(niveau[yy[ok], xx[ok]], vv[ok])
+    return masque, niveau
+
+
+def eau(tx, tz, wc_dir, dem_dir, ruis=None):
     """Eau intérieure d'une région : niveau (altitude réelle de la surface) et distance signée à la berge.
 
     Valeur = round((niveau + 500) / 3) * 16 + c (niveau au pas de 3 m, jusqu'à ~5 640 m ; tient dans un int16 positif) :
@@ -278,6 +387,8 @@ def eau(tx, tz, wc_dir, dem_dir):
     eau = (part >= 0.34) & np.isfinite(dem) & (dem > 0.5)
     niveau = np.full((W, W), np.nan, np.float32)
     lab, nb = ndimage.label(eau, structure=np.ones((3, 3)))
+    if not nb:
+        niveau = np.full((W, W), np.nan, np.float32)
     if nb:
         # rivières : moyenne locale du relief sur l'eau (9 x 9), sans les valeurs aberrantes des berges
         d = np.where(eau, dem, 0.0)
@@ -302,6 +413,12 @@ def eau(tx, tz, wc_dir, dem_dir):
             ajout = (~eau) & (dl <= 0.8 * hwmax + 1.0) & np.isfinite(dem) & (dem > 0.5)
             niveau = np.where(ajout, niveau[jz, jx], niveau)
             eau = eau | ajout
+    # ruisseaux (trop fins pour le satellite) : au fond des vallées, jamais au-dessus du sol réel
+    if ruis is not None:
+        rm, rn = ruis
+        nouv = rm & ~eau & np.isfinite(dem) & (dem > 0.5) & np.isfinite(rn)
+        niveau = np.where(nouv, np.minimum(rn, dem - 0.5), niveau)
+        eau = eau | nouv
     dans = np.searchsorted(np.array([1, 2, 3, 4, 6, 9, 13, 16]),
                            np.minimum(np.round(ndimage.distance_transform_edt(eau)), 16), side="right") - 1
     dist, (iz, ix) = ndimage.distance_transform_edt(~eau, return_indices=True)
@@ -358,14 +475,21 @@ def main():
     paquets, paquets_eau, bilan = {}, {}, {}
     dem_dir = "/tmp/dem30"
     os.makedirs(dem_dir, exist_ok=True)
+    ruis_paquets = {}
     journal = []
-    for tx, tz in sorted(regions):
+    for tx, tz in sorted(regions, key=lambda r: (r[0] >> 4, r[1] >> 4, r)):
         t0 = time.time()
         c = couverture(tx, tz, wc)
         r = roche(tx, tz, journal)
         v = np.where(c > 0, r.astype(np.int32) * 256 + c, VIDE)
         paquets.setdefault((tx >> 4, tz >> 4), {})[(tx & 15) + 16 * (tz & 15)] = encoder(v)
-        ve, ne = eau(tx, tz, wc, dem_dir)
+        cle = (tx >> 4, tz >> 4)
+        if cle not in ruis_paquets:
+            ruis_paquets.clear()
+            ruis_paquets[cle] = ruisseaux_paquet(cle[0], cle[1], dem_dir)
+        rm, rn = ruis_paquets[cle]
+        lx, lz = (tx - cle[0] * N) * T, (tz - cle[1] * N) * T
+        ve, ne = eau(tx, tz, wc, dem_dir, (rm[lz:lz + T + 2 * M, lx:lx + T + 2 * M], rn[lz:lz + T + 2 * M, lx:lx + T + 2 * M]))
         paquets_eau.setdefault((tx >> 4, tz >> 4), {})[(tx & 15) + 16 * (tz & 15)] = encoder(ve)
         print(f"  eau : {ne} blocs", flush=True)
         cc = Counter(c.ravel().tolist())
@@ -392,6 +516,8 @@ def paquet_complet(bx, bz, sortie, publier=False):
     os.makedirs(dem_dir, exist_ok=True)
     sol, eaux, journal = {}, {}, []
     t0 = time.time()
+    rm, rn = ruisseaux_paquet(bx, bz, dem_dir)
+    print(f"ruisseaux : {int(rm.sum())} blocs", flush=True)
     for k in range(N * N):
         tx, tz = bx * N + (k % N), bz * N + (k // N)
         c = couverture(tx, tz, wc)
@@ -399,7 +525,8 @@ def paquet_complet(bx, bz, sortie, publier=False):
             continue
         r = roche(tx, tz, journal)
         sol[k] = encoder(np.where(c > 0, r.astype(np.int32) * 256 + c, VIDE))
-        ve, ne = eau(tx, tz, wc, dem_dir)
+        lx, lz = (tx - bx * N) * T, (tz - bz * N) * T
+        ve, ne = eau(tx, tz, wc, dem_dir, (rm[lz:lz + T + 2 * M, lx:lx + T + 2 * M], rn[lz:lz + T + 2 * M, lx:lx + T + 2 * M]))
         if ne or (ve != VIDE).any():
             eaux[k] = encoder(ve)
         print(f"région {tx} {tz} ({k + 1}/256) : {time.time() - t0:.0f} s, eau {ne}", flush=True)

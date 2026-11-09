@@ -1,0 +1,70 @@
+# Relief du monde à l'échelle 1:30 (09/11/2026) : Copernicus GLO-30 à un point par bloc, une tâche par bande de paquets
+# (bz de -41 à 40, ~2,2° de latitude chacune), publiée comme release « v30-z<bz> » (un fichier relief30_<bx>_<bz>.bin
+# par paquet de 16 x 16 régions de 512 blocs, envoyé dès qu'il est prêt).
+# Le mod télécharge : https://github.com/theMitch37/domaine-terre-relief/releases/download/v30-z{bz}/relief30_{bx}_{bz}.bin
+name: Relief du monde 1:30
+
+on:
+  push:
+    branches: [main]
+    paths: [bandes30.json]
+  workflow_dispatch:
+    inputs:
+      bandes:
+        description: "bandes bz (JSON), vide = bandes30.json"
+        default: ""
+      bx:
+        description: "essai : « min max » des paquets bx (vide = tout le tour)"
+        default: ""
+      publier:
+        description: "publier dans les releases"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  liste:
+    runs-on: ubuntu-latest
+    outputs:
+      bandes: ${{ steps.l.outputs.bandes }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: l
+        run: |
+          B='${{ inputs.bandes }}'
+          [ -n "$B" ] || B=$(tr -d '\n ' < bandes30.json)
+          echo "bandes=$B" >> "$GITHUB_OUTPUT"
+
+  bande:
+    needs: liste
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        bz: ${{ fromJSON(needs.liste.outputs.bandes) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install rasterio numpy
+      - name: Bande ${{ matrix.bz }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          A=""
+          [ -n "${{ inputs.bx }}" ] && A="--bx ${{ inputs.bx }}"
+          P="--publier"
+          [ "${{ inputs.publier }}" = "false" ] && P=""
+          python relief30.py ${{ matrix.bz }} /tmp/sortie $P $A
+      - name: Essai (sans publication)
+        if: github.event_name == 'workflow_dispatch' && !inputs.publier
+        uses: actions/upload-artifact@v4
+        with:
+          name: essai-z${{ matrix.bz }}
+          path: /tmp/sortie
+          retention-days: 3

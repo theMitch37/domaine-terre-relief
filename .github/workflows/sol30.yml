@@ -1,0 +1,45 @@
+# Sol et eau du monde 1:30 (09/11/2026) : ESA WorldCover 10 m + roche Macrostrat + eau (niveau lu dans GLO-30), un
+# paquet de 16 x 16 régions par tâche (liste dans paquets_sol30.json, « bx,bz »), publiés en releases s30-z<bz>
+# (sol30_<bx>_<bz>.bin) et e30-z<bz> (eau30_<bx>_<bz>.bin).
+name: Sol et eau 1:30
+
+on:
+  push:
+    branches: [main]
+    paths: [paquets_sol30.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  liste:
+    runs-on: ubuntu-latest
+    outputs:
+      paquets: ${{ steps.l.outputs.paquets }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: l
+        run: echo "paquets=$(tr -d '\n ' < paquets_sol30.json)" >> "$GITHUB_OUTPUT"
+
+  paquet:
+    needs: liste
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        p: ${{ fromJSON(needs.liste.outputs.paquets) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install rasterio numpy scipy mapbox-vector-tile pillow
+      - name: Paquet ${{ matrix.p }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IFS=, read bx bz <<< "${{ matrix.p }}"
+          python sol30.py --paquet $bx $bz /tmp/sortie --publier

@@ -285,11 +285,23 @@ def eau(tx, tz, wc_dir, dem_dir):
         cnt = ndimage.uniform_filter(eau.astype(np.float32), 9) * 81
         niveau = np.where(eau, som / np.maximum(cnt, 1e-6), np.nan)
         # lacs : grandes nappes presque plates -> un seul niveau (médiane)
+        lac = np.zeros_like(eau)
         for k in range(1, nb + 1):
             sel = lab == k
             v = dem[sel]
             if v.size >= 150 and np.percentile(v, 90) - np.percentile(v, 10) < 4.0:
                 niveau[sel] = np.median(v)
+                lac |= sel
+        # cours d'eau élargis (~×2, 09/11/2026, demande de Maxime : des fleuves plus impressionnants) : de chaque côté,
+        # 0,8 fois la demi-largeur locale + 1 bloc, au niveau de l'eau la plus proche ; les lacs gardent leur rivage
+        riv = eau & ~lac
+        if riv.any():
+            hw = ndimage.distance_transform_edt(riv)
+            hwmax = ndimage.maximum_filter(hw, size=31)
+            dl, (jz, jx) = ndimage.distance_transform_edt(~riv, return_indices=True)
+            ajout = (~eau) & (dl <= 0.8 * hwmax + 1.0) & np.isfinite(dem) & (dem > 0.5)
+            niveau = np.where(ajout, niveau[jz, jx], niveau)
+            eau = eau | ajout
     dans = np.searchsorted(np.array([1, 2, 3, 4, 6, 9, 13, 16]),
                            np.minimum(np.round(ndimage.distance_transform_edt(eau)), 16), side="right") - 1
     dist, (iz, ix) = ndimage.distance_transform_edt(~eau, return_indices=True)

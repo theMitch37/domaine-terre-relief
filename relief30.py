@@ -143,10 +143,18 @@ def main():
         if subprocess.run(["gh", "release", "view", tag], capture_output=True).returncode != 0:
             subprocess.run(["gh", "release", "create", tag, "--title", f"Relief 1:30, bande z{bz}", "--notes", NOTES],
                            check=False)
+    deja = set()
+    if pub:                                                    # reprise : paquets déjà publiés sautés
+        r = subprocess.run(["gh", "release", "view", tag, "--json", "assets", "-q", ".assets[].name"],
+                           capture_output=True, text=True)
+        deja = set(r.stdout.split()) if r.returncode == 0 else set()
+        print(f"{len(deja)} paquets déjà publiés", flush=True)
     total = nb_p = nb_r = 0
     t0 = time.time()
     with ProcessPoolExecutor(os.cpu_count() or 4) as ex:
         for bx in range(bx0, bx1):
+            if f"relief30_{bx}_{bz}.bin" in deja:
+                continue
             o, e, s, n = bornes(bx * N, bz * N, N)
             if s >= 90 or n <= -90 or o >= 180 or e <= -180:
                 continue
